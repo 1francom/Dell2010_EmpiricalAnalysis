@@ -4,7 +4,7 @@ This repository contains an empirical replication and extension of Dell (2010), 
 ## Replication
 - Fully replicated **Table 1**  and **Table 2** .
 - Partially replicated **Table 3**.
-- Used Dell’s original datasets (not uploaded here due to size restrictions, see [Harvard Dataverse link](https://dataverse.harvard.edu/) for access).
+- Used Dell’s original datasets.
 
 ## Extension
 - Extended Dell’s analysis by examining the **long-term effects of the Mita on contemporary domestic violence**.
@@ -33,8 +33,11 @@ The following datasets are used in this project:
 - [demographics1572.csv](https://github.com/user-attachments/files/22176393/demographics1572.csv)
 - [budget1572.csv](https://github.com/user-attachments/files/22176395/budget1572.csv)
 - [gis_grid.csv](https://github.com/user-attachments/files/22176394/gis_grid.csv)
+- [spec_check1572.csv](https://github.com/user-attachments/files/22176645/spec_check1572.csv)
+  
 
 ⚠️ Dataset for **stunted growth analysis** is **not included** due to file size restrictions (>32MB).
+
 
 
 
