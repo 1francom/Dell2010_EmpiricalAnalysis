@@ -1,6 +1,21 @@
 # Dell 2010 – Empirical Analysis
 
-This repository contains an empirical replication and extension of Dell (2010), focusing on the long-term effects of mining on economic development.
+
+## Table of Contents
+- [Replication](#replication)
+- [Extension](#extension)
+- [Tools](#tools)
+- [Structure](#structure)
+- [Data](#data)
+- [Output](#output)
+- [Author](#author)
+
+
+This repository contains the replication and extension of Melissa Dell (2010): 
+*"The Persistent Effects of Peru's Mining Mita"* (Econometrica). 
+The project was completed as part of a seminar at LMU Munich, and combines 
+replication of Dell’s original results with a novel extension on domestic violence.
+
 ## Replication
 - Fully replicated **Table 1**  and **Table 2** .
 - Partially replicated **Table 3**.
@@ -67,4 +82,7 @@ Graphs
 
 
 ## Author
-Franco Medero – Bachelor Student in Economics @ LMU Munich
+**Franco Medero** – Bachelor Student in Economics @ LMU Munich  
+
+- [GitHub](https://github.com/tuusuario)
+
