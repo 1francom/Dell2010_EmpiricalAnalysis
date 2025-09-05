@@ -2,8 +2,8 @@
 
 This repository contains an empirical replication and extension of Dell (2010), focusing on the long-term effects of mining on economic development.
 ## Replication
-- Fully replicated **Table 1** (Descriptive Statistics) and **Table 2** (OLS and IV results).
-- Partially replicated **Table 3** (Robustness checks).
+- Fully replicated **Table 1**  and **Table 2** .
+- Partially replicated **Table 3**.
 - Used Dell’s original datasets (not uploaded here due to size restrictions, see [Harvard Dataverse link](https://dataverse.harvard.edu/) for access).
 
 ## Extension
