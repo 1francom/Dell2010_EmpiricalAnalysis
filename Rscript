@@ -1,0 +1,1887 @@
+                           
+# === Set working directory (PLEASE MODIFY THIS LINE ONLY) ===
+# Replace this path with your local directory before running the script
+
+setwd("C:/Users/meder/OneDrive/Univ/4/Seminararbeit")  
+
+#### Note: Please remember to have availabele in the directory the 3 extra datasets!
+
+                    #########Packages for the entire code #####
+                         
+library(conleyreg)
+library(tidyverse)
+library(rdrobust)
+library(estimatr)
+library(stargazer)
+library(rdpower)
+library(broom)
+library(fixest)
+library(sandwich)
+library(clubSandwich)
+library(lmtest)
+library(geosphere)
+library(conleyreg)
+library(purrr)
+library(glue)
+library(kableExtra)
+library(dbscan)
+library(performance)
+library(stringr)
+
+
+
+#### Data for table 1####
+gis_grid <- read.csv("gis_grid.csv")
+spec_check <- read.csv("spec_check1572.csv")
+budget <- read.csv("budget1572.csv")
+consumption <- read.csv("consumption.csv")
+height <- read.csv("height.csv")
+
+
+#### cusco elimination  #####
+consumption <- consumption %>% filter(cusco == 0)
+budget<- budget %>% filter(cusco == 0)
+spec_check <- spec_check %>% filter(cusco == 0)
+height <- height %>% filter(cusco == 0)
+
+
+                              #######  Replication process for Table 1####
+
+bandwidths <- c(100, 75, 50, 25)  # vector of distances to the mita boundary
+
+##### means for elevation #######
+tabla_means_elev <- map_dfr(bandwidths, function(bw) {
+  gis_grid %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(elev, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "elevation") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+print(tabla_means_elev)
+
+#### Conley SE and robust SE for elevation ####
+
+tabla_SEs <- map_dfr(bandwidths, function(bw) {
+  df <- gis_grid %>%
+    filter(d_bnd <= bw)
+  
+  model <- lm(elev ~ pothuan_mita, data = df)
+  
+ #### Coeficiente y robust SE ####
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  diff <- coef(model)["pothuan_mita"]
+  
+  conley_se <- NA_real_
+  
+  try({
+    conley <- conleyreg(
+      formula = elev ~ pothuan_mita,
+      data = df,
+      unit = "grid_id",
+      lat = "ycord",
+      lon = "xcord",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+print(tabla_SEs)
+
+#### Joining tables elevation ####
+tabla_final_elev <- tabla_means_elev %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  )
+
+print(tabla_final_elev)
+
+##### Slope replication #####
+
+# 1. Calcular means y n for each bw
+tabla_means_slope <- map_dfr(bandwidths, function(bw) {
+  gis_grid %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(slope, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "slope") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 2. Calcular robust SE and Conley SE
+tabla_SEs_slope <- map_dfr(bandwidths, function(bw) {
+  df <- gis_grid %>%
+    filter(d_bnd <= bw)
+  
+  model <- lm(slope ~ pothuan_mita, data = df)
+  
+  # Coeficiente and robust SE
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  # Conley SE con fallback in case it fails
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = slope ~ pothuan_mita,
+      data = df,
+      unit = "grid_id",
+      lat = "ycord",
+      lon = "xcord",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Join and rename Tables
+tabla_final_slope <- tabla_means_slope %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_slope, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  )
+
+print(tabla_final_slope)
+
+#### % indigenous ##### 
+
+# Bandwidths to use
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Create dummy variable (if not already created)
+df_cons <- consumption %>%
+  mutate(indigenous = ifelse(QUE == 1 | AYM == 1, 1, 0))
+
+# 2. Means and group sizes by Mita and bandwidth
+tabla_means_indi <- map_dfr(bandwidths, function(bw) {
+  df_cons %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(indigenous, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "indigenous") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 3. Robust SE and Conley SE by bandwidth
+tabla_SEs_indi <- map_dfr(bandwidths, function(bw) {
+  df <- df_cons %>% filter(d_bnd <= bw)
+  model <- lm(indigenous ~ pothuan_mita, data = df)
+  
+  # Robust standard error
+  robust <- coeftest(model, vcov. = vcovCL(model, cluster = df$ubigeo, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  # Conley standard error 
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = indigenous ~ pothuan_mita,
+      data = df,
+      unit = "hid",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 4. Merge and clean table
+tabla_final_indi <- tabla_means_indi %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_indi, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  ) %>%
+  mutate( Mita_mean = Mita_mean * 100,
+          NonMita_mean = NonMita_mean * 100,
+          robust_se = robust_se * 100,
+          conley_se = conley_se * 100)
+
+
+# Final result
+print(tabla_final_indi)
+
+##### log tribute rate #####
+# Bandwidths
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Means and group sizes by Mita and bandwidth
+tabla_means_trib <- map_dfr(bandwidths, function(bw) {
+  spec_check %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = weighted.mean(ltrib_rate, trib_pop),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "log_tribute") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+tabla_means_trib
+# 2. Robust and Conley SEs
+tabla_SEs_trib <- map_dfr(bandwidths, function(bw) {
+  df <- spec_check %>% filter(d_bnd <= bw)
+  model <- lm(ltrib_rate ~ pothuan_mita, data = df)
+  
+  # Robust SE
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  # Conley SE (try–fallback in case of error)
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = ltrib_rate ~ pothuan_mita,
+      data = df,
+      unit = "ubigeo",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Merge and rename
+tabla_final_trib <- tabla_means_trib %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_trib, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  )
+
+# Final output
+print(tabla_final_trib)
+
+##### Share Nobility ##### 
+# Bandwidths
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Means and group sizes by Mita and bandwidth
+tabla_means_nob <- map_dfr(bandwidths, function(bw) {
+  budget %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(sh_extract, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "sh_extract") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 2. Robust and Conley SEs
+tabla_SEs_nob <- map_dfr(bandwidths, function(bw) {
+  df <- budget %>% filter(d_bnd <= bw)
+  model <- lm(sh_extract ~ pothuan_mita, data = df)
+  
+  # Robust SE
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  # Conley SE
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = sh_extract ~ pothuan_mita,
+      data = df,
+      unit = "ubigeo",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Merge and format
+tabla_final_nob <- tabla_means_nob %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_nob, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  ) %>%
+  # Convert to percentage points
+  mutate(
+    Mita_mean = Mita_mean * 100,
+    NonMita_mean = NonMita_mean * 100,
+    robust_se = robust_se * 100,
+    conley_se = conley_se * 100
+  )
+
+# Final output
+print(tabla_final_nob)
+
+##### share priest ##### 
+# Bandwidths
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Means and group sizes by Mita and bandwidth
+tabla_means_priest <- map_dfr(bandwidths, function(bw) {
+  budget %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(sh_priest, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "sh_priest") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 2. Robust and Conley SEs
+tabla_SEs_priest <- map_dfr(bandwidths, function(bw) {
+  df <- budget %>% filter(d_bnd <= bw)
+  model <- lm(sh_priest ~ pothuan_mita, data = df)
+  
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = sh_priest ~ pothuan_mita,
+      data = df,
+      unit = "ubigeo",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Merge and format
+tabla_final_priest <- tabla_means_priest %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_priest, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  ) %>%
+  mutate(
+    Mita_mean = Mita_mean * 100,
+    NonMita_mean = NonMita_mean * 100,
+    robust_se = robust_se * 100,
+    conley_se = conley_se * 100
+  )
+
+print(tabla_final_priest)
+
+###### justice share ######
+# Bandwidths
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Means and group sizes by Mita and bandwidth
+tabla_means_justice <- map_dfr(bandwidths, function(bw) {
+  budget %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(sh_justice, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "sh_justice") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 2. Robust and Conley SEs
+tabla_SEs_justice <- map_dfr(bandwidths, function(bw) {
+  df <- budget %>% filter(d_bnd <= bw)
+  model <- lm(sh_justice ~ pothuan_mita, data = df)
+  
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = sh_justice ~ pothuan_mita,
+      data = df,
+      unit = "ubigeo",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Merge and format
+tabla_final_justice <- tabla_means_justice %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_justice, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  ) %>%
+  mutate(
+    Mita_mean = Mita_mean * 100,
+    NonMita_mean = NonMita_mean * 100,
+    robust_se = robust_se * 100,
+    conley_se = conley_se * 100
+  )
+
+print(tabla_final_justice)
+
+##### caciques share #####
+# Bandwidths
+bandwidths <- c(100, 75, 50, 25)
+
+# 1. Means and group sizes by Mita and bandwidth
+tabla_means_cacique <- map_dfr(bandwidths, function(bw) {
+  budget %>%
+    filter(d_bnd <= bw) %>%
+    group_by(pothuan_mita) %>%
+    summarise(
+      bandwidth = paste0("<", bw, " km"),
+      mean = mean(sh_cacique, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(variable = "sh_cacique") %>%
+    relocate(bandwidth, pothuan_mita)
+})
+
+# 2. Robust and Conley SEs
+tabla_SEs_cacique <- map_dfr(bandwidths, function(bw) {
+  df <- budget %>% filter(d_bnd <= bw)
+  model <- lm(sh_cacique ~ pothuan_mita, data = df)
+  
+  robust <- coeftest(model, vcov. = vcovHC(model, type = "HC1"))
+  robust_se <- robust["pothuan_mita", "Std. Error"]
+  
+  conley_se <- NA_real_
+  try({
+    conley <- conleyreg(
+      formula = sh_cacique ~ pothuan_mita,
+      data = df,
+      unit = "ubigeo",
+      lat = "y",
+      lon = "x",
+      dist_cutoff = bw,
+      verbose = FALSE
+    )
+    conley_se <- conley["pothuan_mita", "Std. Error"]
+  }, silent = TRUE)
+  
+  tibble(
+    bandwidth = paste0("<", bw, " km"),
+    robust_se = robust_se,
+    conley_se = conley_se
+  )
+})
+
+# 3. Merge and format
+tabla_final_cacique <- tabla_means_cacique %>%
+  pivot_wider(names_from = pothuan_mita, values_from = c(mean, n)) %>%
+  left_join(tabla_SEs_cacique, by = "bandwidth") %>%
+  select(
+    bandwidth,
+    mean_1, n_1, mean_0, n_0, robust_se, conley_se
+  ) %>%
+  rename(
+    Mita_mean = mean_1,
+    Mita_n = n_1,
+    NonMita_mean = mean_0,
+    NonMita_n = n_0
+  ) %>%
+  mutate(
+    Mita_mean = Mita_mean * 100,
+    NonMita_mean = NonMita_mean * 100,
+    robust_se = robust_se * 100,
+    conley_se = conley_se * 100
+  )
+
+print(tabla_final_cacique)
+
+
+
+####### Joining the tables of each variable ########
+# Add category labels
+tabla_final_elev      <- tabla_final_elev %>% mutate(category = "GIS Measures", variable = "Elevation") 
+tabla_final_slope     <- tabla_final_slope %>% mutate(category = "GIS Measures", variable = "Slope") 
+tabla_final_indi      <- tabla_final_indi %>% mutate(category = "Ethnic Composition", variable = "% Indigenous")
+tabla_final_trib      <- tabla_final_trib %>% mutate(category = "Colonial Institutions", variable = "Log 1572 tribute rate")
+tabla_final_nob       <- tabla_final_nob %>% mutate(category = "Pre-Mita Governance", variable = "Share Nobility")
+tabla_final_priest    <- tabla_final_priest %>% mutate(category = "Pre-Mita Governance", variable = "Share Priest")
+tabla_final_justice   <- tabla_final_justice %>% mutate(category = "Pre-Mita Governance", variable = "Share Justice")
+tabla_final_cacique   <- tabla_final_cacique %>% mutate(category = "Pre-Mita Governance", variable = "Share Cacique")
+
+# Bind all
+tabla_final <- bind_rows(
+  tabla_final_elev,
+  tabla_final_slope,
+  tabla_final_indi,
+  tabla_final_trib,
+  tabla_final_nob,
+  tabla_final_priest,
+  tabla_final_justice,
+  tabla_final_cacique
+) %>%
+  mutate(
+    observations = paste0(Mita_n, " / ", NonMita_n),
+    difference = as.numeric(Mita_mean) - as.numeric(NonMita_mean),
+    
+    # Significancia por Conley SE
+    t_conley = abs(difference / as.numeric(conley_se)),
+    p_conley = 2 * (1 - pnorm(t_conley)),
+    stars_conley = case_when(
+      p_conley <= 0.01 ~ "***",
+      p_conley <= 0.05 ~ "**",
+      p_conley <= 0.10 ~ "*",
+      TRUE ~ ""
+    ),
+    
+    # Significancia por Robust SE
+    t_robust = abs(difference / as.numeric(robust_se)),
+    p_robust = 2 * (1 - pnorm(t_robust)),
+    stars_robust = case_when(
+      p_robust <= 0.01 ~ "***",
+      p_robust <= 0.05 ~ "**",
+      p_robust <= 0.10 ~ "*",
+      TRUE ~ ""
+    ),
+    
+    # Combinar both with their stars
+    se_combined = paste0(
+      "[", formatC(conley_se, digits = 2, format = "f"), "]", stars_conley, "\n(",
+      formatC(robust_se, digits = 2, format = "f"), ")", stars_robust
+    ),
+    
+    # Formatear means
+    Mita_mean = formatC(Mita_mean, digits = 2, format = "f"),
+    NonMita_mean = formatC(NonMita_mean, digits = 2, format = "f")
+  ) %>%
+  select(category, variable, bandwidth, Mita_mean, NonMita_mean, se_combined, Mita_n, NonMita_n, observations)
+
+# Convertir diferencias en formato horizontal
+tabla_final_fmt <- tabla_final %>%
+  mutate(
+    formatted = paste0(Mita_mean, " / ", NonMita_mean, " ", se_combined),
+    obs_fmt = paste0(Mita_n, " / ", NonMita_n)
+  )
+
+# Pasar a formato ancho
+table_wide <- tabla_final_fmt %>%
+  select(variable, bandwidth, formatted, obs_fmt) %>%
+  pivot_wider(
+    names_from = bandwidth,
+    values_from = c(formatted, obs_fmt),
+    names_sep = "_"
+  ) %>%
+  rename(
+    "<100 km" = "formatted_<100 km",
+    "<75 km"  = "formatted_<75 km",
+    "<50 km"  = "formatted_<50 km",
+    "<25 km"  = "formatted_<25 km"
+  )
+
+# Create rows de Observations
+obs_gis <- tibble(
+  variable = "Observations",
+  `<100 km` = "177 / 95",
+  `<75 km`  = "144 / 86",
+  `<50 km`  = "104 / 73",
+  `<25 km`  = "52 / 48"
+)
+
+obs_indi <- tibble(
+  variable = "Observations",
+  `<100 km` = "1112 / 366",
+  `<75 km`  = "831 / 330",
+  `<50 km`  = "683 / 330",
+  `<25 km`  = "329 / 251"
+)
+
+obs_instit <- tibble(
+  variable = "Observations",
+  `<100 km` = "63 / 41",
+  `<75 km`  = "47 / 37",
+  `<50 km`  = "35 / 30",
+  `<25 km`  = "18 / 24"
+)
+
+# Join final table
+table_clean <- bind_rows(
+  table_wide %>% filter(variable %in% c("Elevation", "Slope")),
+  obs_gis,
+  table_wide %>% filter(variable == "% Indigenous"),
+  obs_indi,
+  table_wide %>% filter(variable == "Log 1572 tribute rate"),
+  table_wide %>% filter(variable %in% c("Share Nobility", "Share Priest", "Share Justice", "Share Cacique")),
+  obs_instit
+)
+
+# Keep only relevant columns
+table_clean <- table_clean %>%
+  select(variable, `<100 km`, `<75 km`, `<50 km`, `<25 km`)
+
+# Show table in the paper format
+library(kableExtra)
+
+Table_1_Dell <- kbl(table_clean, booktabs = TRUE, escape = FALSE,
+    align = "lcccc",
+    caption = "TABLE I — Summary Statistics") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down")) %>%
+  add_header_above(c(" " = 1,
+                     "<100 km of Mita Boundary" = 1,
+                     "<75 km of Mita Boundary" = 1,
+                     "<50 km of Mita Boundary" = 1,
+                     "<25 km of Mita Boundary" = 1)) %>%
+  footnote(general = "Robust standard errors in parentheses. Conley SEs in brackets. Significance levels: * p<0.10, ** p<0.05, *** p<0.01. 
+           Inside Mita / Outside Mita",
+           threeparttable = TRUE) 
+Table_1_Dell
+ 
+Table_1_Dell %>%
+  save_kable("C:/Users/meder/OneDrive/Univ/4/Seminararbeit/Tabla1_dell.tex")
+
+
+   #----------------------------------------------------------#
+   #### ----   Replicación Tabla II - Dell (2010)   ---- #####
+   #----------------------------------------------------------#
+
+# Panel A - Cubic polynomial in latitude and longitude
+
+# Data modif 
+df <- consumption %>%
+  filter(cusco == 0) %>%
+  mutate(
+    bfe4 = case_when(
+      bfe4_1 == 1 ~ "seg1",
+      bfe4_2 == 1 ~ "seg2",
+      bfe4_3 == 1 ~ "seg3",
+      TRUE ~ "seg4"
+    ),
+    bfe4 = factor(bfe4)
+  )
+
+#### -------- PANEL A: Household consumption -------- ####
+
+# Panel_A_BW100
+df_A_BW100 <- df %>% filter(abs(d_bnd) <= 100)
+modelo_A_BW100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    poly(cbind(x, y), 3) | bfe4,
+  data = df_A_BW100,
+  cluster = ~ubigeo
+)
+
+# Panel_A_BW75
+df_A_BW75 <- df %>% filter(abs(d_bnd) <= 75)
+modelo_A_BW75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    poly(cbind(x, y), 3) | bfe4,
+  data = df_A_BW75,
+  cluster = ~ubigeo
+)
+
+# Panel_A_BW50
+df_A_BW50 <- df %>% filter(abs(d_bnd) <= 50)
+modelo_A_BW50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    poly(cbind(x, y), 3) | bfe4,
+  data = df_A_BW50,
+  cluster = ~ubigeo
+)
+
+# -------- PANEL A: Stunted growth --------
+
+df_height <- height %>%
+  filter(cusco == 0) %>%
+  mutate(
+    desnu = as.numeric(desnu),
+    bfe4 = case_when(
+      bfe4_1 == 1 ~ "seg1",
+      bfe4_2 == 1 ~ "seg2",
+      bfe4_3 == 1 ~ "seg3",
+      TRUE ~ "seg4"
+    ),
+    bfe4 = factor(bfe4)
+  )
+
+
+
+# Panel_A_BW100_stunt
+modelo_A_BW100_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+# Panel_A_BW75_stunt
+modelo_A_BW75_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+# Panel_A_BW50_stunt
+modelo_A_BW50_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+
+
+# Panel_A_BWborder_stunt
+modelo_A_BWborder_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + poly(cbind(x, y), degree = 3) | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+summary(modelo_A_BWborder_stunt)
+
+
+# -------- PANEL B: Cubic polynomial in distance to Potosí --------
+
+# Household consumption
+modelo_B_BW100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_B_BW75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_B_BW50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults + 
+    dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+# Stunted growth
+modelo_B_BW100_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_B_BW75_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_B_BW50_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+modelo_B_BWborder_stunt <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + dpot + I(dpot^2) + I(dpot^3) | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+
+#### ---------     Panel C     ------------- #### 
+### BW 100 Consumption
+modelo_C_bw100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+modelo_C_bw100
+
+##### BW 75 Consumption
+modelo_C_bw75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+
+##### BW 50 Consumption
+modelo_C_bw50 <-  feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+#### Panel C stunted growth
+modelo_C_bw100_stunted <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope + d_bnd + I(dpot^2) + I(dpot^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_C_bw75_stunted <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_C_bw50_stunted <-  feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+modelo_C_bwborder_stunted <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+#### Extraer coefficients
+library(broom)
+library(fixest)
+
+# Función to extract coef, SE, R², N y name del modelo
+extract_simple_summary <- function(model_list) {
+  results <- tibble()
+  
+  for (name in names(model_list)) {
+    model <- model_list[[name]]
+    
+    coef <- coefficients(model)["pothuan_mita"]
+    se <- se(model)["pothuan_mita"]
+    r2 <- glance(model)$r.squared
+    n <- nobs(model)
+    
+    results <- bind_rows(results, tibble(
+      model_name = name,
+      estimate = coef,
+      std_error = se,
+      r2 = r2,
+      n = n
+    ))
+  }
+  
+  return(results)
+}
+all_models <- list(
+  "<100 km of Bound" = modelo_A_BW100,
+  "<75 km of Bound" = modelo_A_BW75,
+  "<50 km of Bound" = modelo_A_BW50,
+  "<100 km of Bound " = modelo_A_BW100_stunt,
+  "<75 km of Bound " = modelo_A_BW75_stunt,
+  "<50 km of Bound " = modelo_A_BW50_stunt,
+  "Border District"  = modelo_A_BWborder_stunt,
+  "B <100 km of Bound" = modelo_B_BW100,
+  "B <75 km of Bound" = modelo_B_BW75,
+  "B <50 km of Bound" = modelo_B_BW50,
+  "B <100 km of Bound " = modelo_B_BW100_stunt,
+  "B <75 km of Bound " = modelo_B_BW75_stunt,
+  "B <50 km of Bound " = modelo_B_BW50_stunt,
+  " Border District " = modelo_B_BWborder_stunt,
+  "C <100 km of Bound" = modelo_C_bw100,
+  "C <75km of Bound" = modelo_C_bw75,
+  "C <50 km of Bound" = modelo_C_bw50,
+  "C <100 km of Bound " = modelo_C_bw100_stunted,
+  "C <75 km of Bound " = modelo_C_bw75_stunted,
+  "C <50 km of Bound " = modelo_C_bw50_stunted,
+  "C Border District" = modelo_C_bwborder_stunted
+)
+print(extract_simple_summary(all_models), n = 21)
+##### Number of clusters
+# Número de clusters por BW en consumption
+clusters_consum <- consumption %>%
+  filter(cusco == 0) %>%
+  summarise(
+    clusters_100 = n_distinct(ubigeo[abs(d_bnd) <= 100]),
+    clusters_75  = n_distinct(ubigeo[abs(d_bnd) <= 75]),
+    clusters_50  = n_distinct(ubigeo[abs(d_bnd) <= 50]))
+clusters_consum
+#### Clusters in height
+clusters_num <- height %>%
+  filter(cusco == 0) %>%
+  summarise(
+    clusters_100 = n_distinct(ubigeo[abs(d_bnd) <= 100]),
+    clusters_75  = n_distinct(ubigeo[abs(d_bnd) <= 75]),
+    clusters_50  = n_distinct(ubigeo[abs(d_bnd) <= 50]),
+    clusters_border = n_distinct(ubigeo[abs(d_bnd) <= 16.8])
+  )
+clusters_num[1]
+
+lista_clusters <- list(clusters_consum[1], clusters_consum[2], clusters_consum[3], clusters_num[1], clusters_num[2], clusters_num[3], clusters_num[4])
+clusters_vector <- sapply(lista_clusters, function(x) as.character(x[[1]]))
+clusters_vector
+#### Format replication ####
+
+# 1. Organize the results
+results_df <- extract_simple_summary(all_models) %>%
+  bind_rows() %>%
+  mutate(
+    outcome = rep(c("lhhequiv", "desnu"), times = c(9, 12)),
+    panel = rep(c("A", "B", "C"), each = 7),
+    label = sprintf("%.3f", estimate),
+    stars = case_when(
+      abs(estimate / std_error) > 2.576 ~ "***",
+      abs(estimate / std_error) > 1.960 ~ "**",
+      abs(estimate / std_error) > 1.645 ~ "*",
+      TRUE ~ ""
+    ),
+    se_fmt = sprintf("(%.3f)", std_error),
+    full_label = paste0(label, stars, "\n", se_fmt)
+  )
+
+# 2. Orden correcto de columnas
+ordered_labels <- results_df$full_label
+ordered_r2s <- sprintf("%.3f", results_df$r2)
+ordered_n <- as.character(results_df$n)
+clusters_vector <- c("71", "60", "52", "289", "239", "185", "63")  
+
+# 3. Construir matriz (3 paneles × 7 columnas)
+table_matrix <- rbind(
+  ordered_labels[1:7], ordered_r2s[1:7],
+  ordered_labels[8:14], ordered_r2s[8:14],
+  ordered_labels[15:21], ordered_r2s[15:21]
+)
+
+rownames(table_matrix) <- c(
+  "Mita (Panel A)", "R$^²$",
+  "Mita (Panel B)", " R$^²$",
+  "Mita (Panel C)", "R$^² $"
+)
+
+colnames(table_matrix) <- c("<100 km Cons.", "<75 km Cons.", "<50 km Cons.",
+                            "<100 km Stunted", "<75 km Stunted", "<50 km Stunted", "Border Stunted")
+
+# 4. Convertir a tibble and join the controls
+table_df <- as.data.frame(table_matrix) %>%
+  rownames_to_column(var = " ")
+
+footer_controls <- tribble(
+  ~` `,  ~`<100 km Cons.`, ~`<75 km Cons.`, ~`<50 km Cons.`,
+  ~`<100 km Stunted`, ~`<75 km Stunted`, ~`<50 km Stunted`, ~`Border Stunted`,
+  "Geo. controls", "yes", "yes", "yes", "yes", "yes", "yes", "yes",
+  "Boundary F.E.s", "yes", "yes", "yes", "yes", "yes", "yes", "yes",
+  "Clusters", clusters_vector[1], clusters_vector[2], clusters_vector[3],
+  clusters_vector[4], clusters_vector[5], clusters_vector[6], clusters_vector[7],
+  "Observations", ordered_n[1], ordered_n[2], ordered_n[3],
+  ordered_n[4], ordered_n[5], ordered_n[6], ordered_n[7]
+)
+
+final_table <- bind_rows(table_df, footer_controls)
+
+# 5. Show the final table 
+ kbl(final_table, booktabs = TRUE, escape = FALSE,
+    align = "lccccccc", caption = "TABLE II — Living Standards") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down")) %>%
+  add_header_above(c(" " = 1,
+                     "Log Equiv. Household Consumption (2001)" = 3,
+                     "Stunted Growth, Children 6–9 (2005)" = 4)) %>%
+  add_header_above(c("Sample Within:" = 1,
+                     "<100 km of Bound." = 1,
+                     "<75 km of Bound." = 1,
+                     "<50 km of Bound." = 1,
+                     "<100 km of Bound." = 1,
+                     "<75 km of Bound." = 1,
+                     "<50 km of Bound." = 1,
+                     "Border District" = 1)) %>%
+  footnote(general = "Robust standard errors clustered by district in parentheses. Significance levels: * p<0.10, ** p<0.05, *** p<0.01.",
+           threeparttable = TRUE)
+
+##### ------ REPLICATION TABLE III ------######
+
+### linear models #####
+modelo_linear_bw100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_linear_bw75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_linear_bw50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+linear_stunted_100 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+linear_stunted_75 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+linear_stunted_50 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+linear_stunted_border <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+linear_stunted_border
+
+#### quadratic polynomial ####
+modelo_quadratic_bw100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_quadratic_bw75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_quadratic_bw50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+quadr_stunted_100 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+quadr_stunted_75 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+quadr_stunted_50 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+quadr_stunted_border <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+#### ----- quartic polynomial -----####
+modelo_quartic_bw100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_quartic_bw75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_quartic_bw50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+quartic_stunted_100 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+quartic_stunted_75 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+quartic_stunted_50 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+quartic_stunted_border <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope +
+    d_bnd + I(d_bnd^2) + I(d_bnd^3) + I(d_bnd^4) | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+#### -- interaction linear -- ####
+modelo_interlinear_bw100 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_interlinear_bw75 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+modelo_interlinear_bw50 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+interlinear_stu_100 <- feols(
+  desnu ~ pothuan_mita * d_bnd + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+interlinear_stu_75 <- feols(
+  desnu ~ pothuan_mita * d_bnd + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+interlinear_stu_50 <- feols(
+  desnu ~ pothuan_mita * d_bnd + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+
+interlinear_stu_border <- feols( 
+  desnu ~ pothuan_mita * d_bnd + elv_sh + slope | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+#####  --- 4 interaction quadratic ---   ####
+modelo_interquad_bw100 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+modelo_interquad_bw75 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+modelo_interquad_bw50 <- feols(
+  lhhequiv ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+interquad_stun_100 <- feols(
+  desnu ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+
+interquad_stun_75 <- feols(
+  desnu ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+
+interquad_stun_50 <- feols(
+  desnu ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+interquad_stun_border <- feols(
+  desnu ~ pothuan_mita * d_bnd + pothuan_mita * I(d_bnd^2) +
+    elv_sh + slope | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo)
+interquad_stun_border
+#### -- OLS -- ####
+modelo_ols_bw100 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+modelo_ols_bw75 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+modelo_ols_bw50 <- feols(
+  lhhequiv ~ pothuan_mita + elv_sh + slope + infants + children + adults | bfe4,
+  data = filter(df, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+ols_stunted_100 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 100),
+  cluster = ~ubigeo
+)
+ols_stunted_75 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 75),
+  cluster = ~ubigeo
+)
+ols_stunted_50 <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope | bfe4,
+  data = filter(df_height, abs(d_bnd) <= 50),
+  cluster = ~ubigeo
+)
+ols_stunted_border <- feols(
+  desnu ~ pothuan_mita + elv_sh + slope | bfe4,
+  data = df_height %>% filter(border == 1),
+  cluster = ~ubigeo
+)
+
+#### 1. Extract results  ####
+modelos_baseline3 <- list(
+  "<100km of bound (1)"  = modelo_linear_bw100,
+  "<75km of bound (2)"  = modelo_linear_bw75,
+  "<50km of bound (3)"  =  modelo_linear_bw50,
+  "<100km of bound (4)" = linear_stunted_100,
+  "<75km of bound (5)"  = linear_stunted_75,
+  "<50km of bound (6)"  = linear_stunted_50,
+  "Border district (7)"   = linear_stunted_border,
+  "<100km of bound(1)." = modelo_quadratic_bw100,
+  "<75km of bound (2) " = modelo_quadratic_bw75,
+  "<50km of bound (3)" = modelo_quadratic_bw50,
+  "<100km of bound (4) " = quadr_stunted_100,
+  "<75km of bound(5) " = quadr_stunted_75,
+  "<50km of bound (6) " = quadr_stunted_50,
+  "Border district (7)" = quadr_stunted_border,
+  "<100km of bound (1)." = modelo_quartic_bw100,
+  "<75km of bound (2)."  = modelo_quartic_bw75,
+  "<50km of bound (3)."  =  modelo_quartic_bw50,
+  "<100km of bound (4)." = quartic_stunted_100,
+  "<75km of bound (5)."  = quartic_stunted_75,
+  "<50km of bound (6)."  = quartic_stunted_50,
+  "Border district (7)."   = quartic_stunted_border,
+  " <100km of bound (1)"  = modelo_interlinear_bw100,
+  " <75km of bound (2)"  = modelo_interlinear_bw75,
+  " <50km of bound (3)"  =  modelo_interlinear_bw50,
+  " <100km of bound (4)" = interlinear_stu_100,
+  " <75km of bound (5)"  = interlinear_stu_75,
+  " <50km of bound (6)"  = interlinear_stu_50,
+  " Border district (7)"   = interlinear_stu_border,
+  ".<100km of bound (1)"  = modelo_interquad_bw100,
+  ".<75km of bound (2)"  = modelo_interquad_bw75,
+  ".<50km of bound (3)"  =  modelo_interquad_bw50,
+  ".<100km of bound (4)" = interquad_stun_100,
+  ".<75km of bound (5)"  = interquad_stun_75,
+  ".<50km of bound (6)"  = interquad_stun_50,
+  ". Border district (7)"   = interquad_stun_border,
+  "<100km of bound  (1)"  = modelo_ols_bw100,
+  "<75km of bound  (2)"  = modelo_ols_bw75,
+  "<50km of bound  (3)"  =  modelo_ols_bw50,
+  "<100km of bound  (4)" = ols_stunted_100,
+  "<75km of bound  (5)"  = ols_stunted_75,
+  "<50km of bound  (6)"  = ols_stunted_50,
+  "Border district  (7)"   = ols_stunted_border
+)
+
+
+results_df_3 <- extract_simple_summary(modelos_baseline3) %>%
+  mutate(
+    outcome = rep(c("lhhequiv", "desnu"), each = 21),
+    panel = rep(c("Linear polynomial", "Quadratic polynomial", "Quartic polynomial",
+                  "Interacted linear polynomial", "Interacted quadratic polynomial", "Ordinary Least Squares"), each = 7),
+    label = sprintf("%.3f", estimate),
+    stars = case_when(
+      abs(estimate / std_error) > 2.576 ~ "***",
+      abs(estimate / std_error) > 1.960 ~ "**",
+      abs(estimate / std_error) > 1.645 ~ "*",
+      TRUE ~ ""
+    ),
+    se_fmt = sprintf("(%.3f)", std_error),
+    full_label = paste0(label, stars, "\n", se_fmt)
+  )
+
+# 3. Create matrix with formato table 2
+table_matrix3 <- matrix(results_df_3$full_label, nrow = 6, byrow = TRUE)
+
+rownames(table_matrix3) <- c(
+  "Linear polynomial", "Quadratic polynomial", "Quartic polynomial",
+  "Interacted linear polynomial", "Interacted quadratic polynomial", "Ordinary Least Squares"
+)
+
+colnames(table_matrix3) <- c(
+  "<100 km Cons.", "<75 km Cons.", "<50 km Cons.",
+  "<100 km Stunted", "<75 km Stunted", "<50 km Stunted", "Border Stunted"
+)
+
+# 4. Convertir a data frame y add controls
+table_df3 <- as.data.frame(table_matrix3) %>%
+  rownames_to_column(var = " ")
+
+footer_controls <- tribble(
+  ~` `,  ~`<100 km Cons.`, ~`<75 km Cons.`, ~`<50 km Cons.`,
+  ~`<100 km Stunted`, ~`<75 km Stunted`, ~`<50 km Stunted`, ~`Border Stunted`,
+  "Geo. controls", "yes", "yes", "yes", "yes", "yes", "yes", "yes",
+  "Boundary F.E.s", "yes", "yes", "yes", "yes", "yes", "yes", "yes",
+  "Clusters", clusters_vector[1], clusters_vector[2], clusters_vector[3],
+  clusters_vector[4], clusters_vector[5], clusters_vector[6], clusters_vector[7],
+  "Observations", ordered_n[1], ordered_n[2], ordered_n[3],
+  ordered_n[4], ordered_n[5], ordered_n[6], ordered_n[7]
+)
+
+final_table3 <- bind_rows(table_df3, footer_controls)
+
+# 5. Show the table with Dell's format##### 
+kbl(final_table3, booktabs = TRUE, escape = FALSE,
+    align = "lccccccc", caption = "TABLE III — Baseline III: Living Standards") %>%
+  kable_styling(latex_options = c("hold_position", "scale_down")) %>%
+  add_header_above(c(" " = 1,
+                     "Log Equiv. Household Consumption (2001)" = 3,
+                     "Stunted Growth, Children 6–9 (2005)" = 4)) %>%
+  add_header_above(c("Sample Within:" = 1,
+                     "<100 km of Bound." = 1,
+                     "<75 km of Bound." = 1,
+                     "<50 km of Bound." = 1,
+                     "<100 km of Bound." = 1,
+                     "<75 km of Bound." = 1,
+                     "<50 km of Bound." = 1,
+                     "Border District" = 1)) %>%
+  footnote(general = "Robust standard errors clustered by district in parentheses. Significance levels: * p<0.10, ** p<0.05, *** p<0.01.",
+           threeparttable = TRUE)
+
+############################################################
+           ########## ----- Graphs RD ----- ################
+### Data preparation
+ df_cons <- df_cons %>%
+  mutate(
+    bfe4 = case_when(
+      bfe4_1 == 1 ~ "seg1",
+      bfe4_2 == 1 ~ "seg2",
+      bfe4_3 == 1 ~ "seg3",
+      TRUE ~ "seg4"
+    ),
+    fe = factor(bfe4)
+  ) 
+  cons_rd <- df_cons %>%
+    filter(abs(bnd_dist_neg) <= 50)
+
+  df_plot <- df_cons %>% filter(abs(bnd_dist_neg) <= 100)
+  
+  # Graph with rdplot log consumption Panel C Table II
+  
+gr_cons <-  rdplot(y = df_plot$lhhequiv,
+         x = df_plot$bnd_dist_neg,
+         c = 0,
+         p = 3,
+         binselect = "qs",
+         title = "Standard RDD Plot – Log Consumption (BW 100km)",
+         x.label = "Distance to Mita Boundary
+Outside / Inside ",
+         y.label = "Log Equiv. Household Consumption")
+
+  ##### different type of binning ###
+
+ gr_cons2 <- rdplot(y = df_plot$lhhequiv,
+         x = df_plot$bnd_dist_neg,
+         c = 0,
+         p = 3,
+         nbins = c(40, 40),
+         title = "Standard RDD Plot – Log Consumption (BW 100km)",
+         x.label = "Distance to Mita Boundary
+Outside  /  Inside",
+         y.label = "Log Equiv. Household Consumption")
+ 
+
+
+ 
+ 
+                 ######## Graphs from Table V investigating continuity at the threshold ########
+ 
+  df_budget <- budget %>%
+    mutate(
+      bfe4 = case_when(
+        bfe4_1 == 1 ~ "seg1",
+        bfe4_2 == 1 ~ "seg2",
+        bfe4_3 == 1 ~ "seg3",
+        TRUE ~ "seg4"
+      ),
+      fe = factor(bfe4)
+    ) 
+  
+  
+#### Graph for share spanish justice  ####
+  budget_rd <- budget %>%
+    mutate(
+      bnd_dist_neg = ifelse(pothuan_mita == 1, -abs(bnd_dist_neg), abs(bnd_dist_neg)),
+      mita_label = ifelse(pothuan_mita == 1, "Mita (treated)", "No Mita (control)")
+    )
+
+
+  
+ggplot(budget_rd %>% filter(abs(bnd_dist_neg) <= 50), aes(x = bnd_dist_neg, y = sh_justice)) +
+    geom_point(color = "blue", alpha = 0.7) +
+    geom_smooth(data = subset(budget, bnd_dist_neg < 0 & abs(bnd_dist_neg) <= 50),
+                method = "lm", formula = y ~ poly(x, 3), se = FALSE, color = "red") +
+    geom_smooth(data = subset(budget, bnd_dist_neg >= 0 & abs(bnd_dist_neg) <= 50),
+                method = "lm", formula = y ~ poly(x, 3), se = FALSE, color = "red") +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    labs(
+      title = "RDD: Share of tribute to justice",
+      x = "Distance to Mita boundary (Mita to the left)",
+      y = "Share of tribute to justice"
+    ) +
+    theme_minimal()
+  
+  
+#### Graph for caciques share ####
+
+ 
+ggplot(budget_rd %>% filter(abs(bnd_dist_neg) <= 50), aes(x = bnd_dist_neg, y = sh_cacique)) +
+  geom_point(color = "blue", alpha = 0.7) +
+  geom_smooth(data = subset(budget, bnd_dist_neg < 0 & abs(bnd_dist_neg) <= 50),
+              method = "lm", formula = y ~ poly(x, 3), se = FALSE, color = "red") +
+  geom_smooth(data = subset(budget, bnd_dist_neg >= 0 & abs(bnd_dist_neg) <= 50),
+              method = "lm", formula = y ~ poly(x, 3), se = FALSE, color = "red") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    title = "RDD: Share of tribute indigenous mayors",
+    x = "Distance to Mita boundary (Mita to the left)",
+    y = "Share of tribute to indigenous majors"
+  ) +
+  theme_minimal()
+
+  ##################################################################################
+               ##################### EXTENSION ########################
+  ##################################################################################
+  library(readxl)
+  library(stringi)
+  
+  #### ubigeo codes dataset, here is the file "UBIGEO 2022_1891 distritos" needed ######## 
+  
+  ubigeo_cod <- read_excel("UBIGEO 2022_1891 distritos.xlsx") %>%
+    mutate(ubigeo = str_pad(as.character(IDDIST), 6, pad = "0")) %>%
+    select(ubigeo, NOMBDIST, NOMBPROV, NOMBDEP) %>%
+    mutate(
+      NOMBDIST = str_to_upper(stri_trans_general(NOMBDIST, "Latin-ASCII")),
+      NOMBPROV = str_to_upper(stri_trans_general(NOMBPROV, "Latin-ASCII"))
+    )
+  
+              ######## VIOLENCE IMPLEMENTATION ###
+  
+  ##### load datasets and merge the necessary data
+  demographics <- read.csv("demographics1572.csv")
+  #### demographics for merge ####
+  demo_merge <- demographics %>% 
+    mutate(ubigeo = str_pad(as.character(ubigeo), 6, pad = "0")) %>%
+    select(ubigeo, trib_pop, sh_trib, sh_oldmen, sh_boys, sh_women, tot_other, total_pop)
+  ##### budget for merge
+  budget_merge <- budget %>%
+    select(ubigeo, pothuan_mita, cusco, d_bnd, bnd_dist_neg, bfe4_1, bfe4_2, bfe4_3, 
+           sh_extract, sh_cacique, sh_priest, ltrib_rate, dpot, slope, elv_sh,
+           x, y, border) %>%
+    mutate(ubigeo = str_pad(as.character(ubigeo), 6, pad = "0")) %>%
+    left_join(demo_merge, by = "ubigeo")
+
+    #### dataset for the number of police stations, here is the file "Relación de comisarías básicas 1318" needed ####
+  
+  cant_comisarias <- read_delim("Relación de comisarías básicas 1318.csv",delim = ";",
+                                locale = locale(encoding = "latin1")) 
+  comisarias_cod <- cant_comisarias %>%
+    group_by(NOMBREPP, NOMBREDI) %>%
+    summarise(n_comis = n()) %>%
+    left_join(ubigeo_cod, 
+              by = c("NOMBREPP" = "NOMBPROV", 
+                     "NOMBREDI" = "NOMBDIST")) %>%
+    select(ubigeo, n_comis) %>%
+    mutate(ubigeo = str_pad(as.character(ubigeo), 6, pad = "0")) 
+  comisarias_cod <- drop_na(comisarias_cod)
+  
+  com_cod_pop <- budget_merge %>%
+    left_join(comisarias_cod, by = "ubigeo")
+  
+  #### dataset domestic violence, here is the file "violencia_web_2018_31012025" needed ####
+  
+  violencia <- read_delim("DATASET_Violencia Contra la Mujer - Enero 2025.csv", delim = ";") %>%
+    mutate(ubigeo = str_pad(as.character(UBIGEO_HECHO), 6, pad = "0"))
+  
+  viol_distr <- violencia %>%
+    group_by(ubigeo) %>%
+    summarise(n_cases = sum(CANTIDAD))
+  
+  viol_com_bud <- viol_distr %>% 
+    inner_join(com_cod_pop, by = "ubigeo") %>%
+    mutate(rate_cases = (n_cases/total_pop)*100)
+  
+  viol_com_bud <- drop_na(viol_com_bud)
+  
+  #### running regressions ##########
+  
+  #### Different amount of police stations? ######
+  num_police <- lm(n_comis ~ pothuan_mita + poly(bnd_dist_neg, 3) + slope
+                   + elv_sh, data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 75), cusco == 0)
+  summary(num_police)
+  
+  num_stations <- viol_com_bud %>%
+    filter(cusco == 0) %>%
+    group_by(pothuan_mita) %>%
+    summarise(cant_station = sum(n_comis), n())
+  num_stations
+  
+  t.test(n_comis ~ pothuan_mita, data = viol_com_bud)
+  
+  
+  #### with boundary FE
+  viol_com_bud <- viol_com_bud %>%
+    mutate(bfe4 = case_when(
+      bfe4_1 == 1 ~ "seg1",
+      bfe4_2 == 1 ~ "seg2",
+      bfe4_3 == 1 ~ "seg3",
+      TRUE ~ "seg4"
+    ),
+    bfe4 = factor(bfe4))
+  ##### regression models
+  fe_bw100 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                      sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                    data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 100, cusco == 0),
+                    cluster = ~ubigeo)
+  summary(fe_bw100)
+  
+  fe_bw75 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 75, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(fe_bw75)
+  fe_bw50 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 50, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(fe_bw50)
+  
+  fe_bw25 <- feols(rate_cases ~ pothuan_mita +  n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 25, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(fe_bw25)
+  
+##### robutsness check with latitude and longitude ####
+  xy_bw100 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                      sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                    data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 100, cusco == 0),
+                    cluster = ~ubigeo)
+  summary(xy_bw100)
+  
+  xy_bw75 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 75, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(xy_bw75)
+  xy_bw50 <- feols(rate_cases ~ pothuan_mita + n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 50, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(xy_bw50)
+  
+  xy_bw25 <- feols(rate_cases ~ pothuan_mita + n_comis+ sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 25, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(xy_bw25)
+  
+  ######## robustness check interaction term between mita and n_comis  ####
+ 
+   ##       latitude and longitude ####
+  xyin_bw100 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                      sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                    data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 100, cusco == 0),
+                    cluster = ~ubigeo)
+  summary(xyin_bw100)
+  
+  xyin_bw75 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 75, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(xyin_bw75)
+  xyin_bw50 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(cbind(x, y), 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 50, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(xyin_bw50)
+  
+ 
+  
+  #### distance to the mita boundary with interaction term ####
+  
+  
+  in_bw100 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                      sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                    data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 100, cusco == 0),
+                    cluster = ~ubigeo)
+  summary(in_bw100)
+  
+  in_bw75 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 75, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(in_bw75)
+  in_bw50 <- feols(rate_cases ~ pothuan_mita * n_comis + sh_oldmen +
+                     sh_women + sh_boys + elv_sh + slope + poly(bnd_dist_neg, 3) | bfe4,
+                   data = viol_com_bud %>% filter(abs(bnd_dist_neg) <= 50, cusco == 0),
+                   cluster = ~ubigeo)
+  summary(in_bw50)
+  
+  #### extracting coefficients #### 
+  extract_summary_com <- function(model_list) {
+    results <- tibble()
+    
+    for (name in names(model_list)) {
+      model <- model_list[[name]]
+      
+      coef <- coefficients(model)["n_comis"]
+      se <- se(model)["n_comis"]
+      r2 <- glance(model)$r.squared
+      n <- nobs(model)
+      
+      results <- bind_rows(results, tibble(
+        model_name = name,
+        estimate = coef,
+        std_error = se,
+        r2 = r2,
+        n = n
+      ))
+    }
+    
+    return(results)
+  }
+  
+  models_violence <- list(
+    "<100 km of Bound" = fe_bw100,
+    "<75 km of Bound" = fe_bw75,
+    "<50 km of Bound" = fe_bw50,
+    "<25 km of Bound" = fe_bw25
+    
+  )
+
+  print(extract_summary_com(models_violence))
+  print(extract_simple_summary(models_violence))
+  models_violence_xy <- list(
+    " <100km of bound" = xy_bw100,
+    " <75 km of bound" = xy_bw75,
+    " <50 km of bound"= xy_bw50,
+    " <25 km of bound" = xy_bw25
+  )
+  print(extract_summary_com(models_violence_xy))
+  print(extract_simple_summary(models_violence_xy))
+
+#### coefficients from the interactions
+  extract_summary_int <- function(model_list) {
+    results <- tibble()
+    
+    for (name in names(model_list)) {
+      model <- model_list[[name]]
+      
+      coef <- coefficients(model)["pothuan_mita:n_comis"]
+      se <- se(model)["pothuan_mita:n_comis"]
+      r2 <- glance(model)$r.squared
+      n <- nobs(model)
+      
+      results <- bind_rows(results, tibble(
+        model_name = name,
+        estimate = coef,
+        std_error = se,
+        r2 = r2,
+        n = n
+      ))
+    }
+    
+    return(results)
+  }
+  interaction_xy <- list(
+    "<100 km of bound" = xyin_bw100,
+    "<75 km of bound" = xyin_bw75,
+    "<50 km of bound" = xyin_bw50
+  )
+  
+  print(extract_summary_int(interaction_xy))
+  print(extract_simple_summary(interaction_xy))
+
+  
+  interaction_bnd <- list(
+    " <100km of bound" = in_bw100,
+    " <75 km of bound" = in_bw75,
+    " <50 km of bound" = in_bw50
+  )
+  
+  print(extract_simple_summary(interaction_bnd))
+  print(extract_summary_com(interaction_bnd))
+  print(extract_summary_int(interaction_bnd))
+  
+  #### graph visualization
+  with(viol_com_bud %>% filter(abs(bnd_dist_neg) <= 100, cusco == 0),
+       rdplot(rate_cases,
+              x = bnd_dist_neg,
+              p = 3,
+              c = 0,
+              binselect = "qs",
+              x.label = "Outside Mita         /          Inside Mita",
+              y.label = "cases every 100 inhabitants"))
+
+  
+  
