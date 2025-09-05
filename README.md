@@ -83,6 +83,6 @@ Graphs
 
 ## Author
 **Franco Medero** – Bachelor Student in Economics @ LMU Munich  
-
-- [GitHub](https://github.com/tuusuario)
+-[LinkedIn](www.linkedin.com/in/franco-medero-3072ab206)
+- [GitHub](https://github.com/1francom)
 
